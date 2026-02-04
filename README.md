@@ -1,42 +1,42 @@
 RAG Application – Google Colab Execution Guide
 
-This project demonstrates a Retrieval-Augmented Generation (RAG) application using:
+This repository demonstrates a Retrieval-Augmented Generation (RAG) application using:
 
 OpenRouter (LLM API)
 
-FAISS for vector search
+FAISS (vector search)
 
-Sentence Transformers for embeddings
+Sentence Transformers (embeddings)
 
-Streamlit for chatbot UI
+Streamlit (chatbot UI)
 
-Google Colab as the execution environment
+Google Colab (execution environment)
 
-🔧 Prerequisites
+1. Prerequisites
 
-Before starting, make sure you have:
+Before you begin, ensure you have:
 
-A Google account (for Google Colab)
+Google account (for Google Colab)
 
-A GitHub account
+GitHub account
 
-An OpenRouter account (for LLM access)
+OpenRouter account (for LLM access)
 
-🔑 Step 1: Create an OpenRouter Account & API Key
+2. Create OpenRouter Account & API Key
 
-Go to 👉 https://openrouter.ai
+Go to:
+👉 https://openrouter.ai
 
-Sign up / log in
+Sign up or log in
 
 Navigate to API Keys
 
 Click Create API Key
 
-Copy the key (you will need it once)
+Copy the API key
+⚠️ You will not be able to view it again
 
-⚠️ Do NOT commit this key to GitHub
-
-🔐 Step 2: Store OpenRouter API Key in Google Colab Secrets
+3. Store OpenRouter API Key in Google Colab Secrets
 
 Open Google Colab
 
@@ -48,32 +48,31 @@ Name: OPENROUTER_API_KEY
 
 Value: <your_openrouter_api_key>
 
-Save it
+Click Save
 
-This allows secure access without hard-coding the key.
+This keeps your API key secure and out of source code.
 
-🚀 Step 3: Open Project in Google Colab
-Option A: Upload Files Manually
+4. Open the Project in Google Colab
+Option A: Clone from GitHub (Recommended)
 
-Open https://colab.research.google.com
+Run the following in a Colab cell:
 
-Create a New Notebook
+!git clone https://github.com/krishnar0929/rag-sample.git
+%cd rag-sample
 
-Upload the following files into Colab:
+Option B: Upload Files Manually
+
+Upload these files into Colab:
 
 build_index.py
 colab_run.py
 ui_chatbot_streamlit.py
 requirements.txt
-insurance_doc.pdf   (or your own PDF)
+insurance_doc.pdf   (or any PDF)
 
-Option B: Clone from GitHub (Recommended)
-!git clone https://github.com/<your-username>/rag-sample.git
-%cd rag-sample
+5. Install Dependencies
 
-📦 Step 4: Install Required Dependencies
-
-Run this in a Colab cell:
+Run this cell in Google Colab:
 
 !pip install -U \
   streamlit \
@@ -86,30 +85,30 @@ Run this in a Colab cell:
   sentence-transformers
 
 
-⏳ This may take 1–2 minutes.
+Wait until installation completes.
 
-🔐 Step 5: Load OpenRouter API Key in Colab
+6. Load OpenRouter API Key in Colab
 
-Run the following Python cell:
+Run this Python cell:
 
 import os
 from google.colab import userdata
 
 os.environ["OPENROUTER_API_KEY"] = userdata.get("OPENROUTER_API_KEY")
 
-assert os.environ.get("OPENROUTER_API_KEY"), "❌ OPENROUTER_API_KEY not found"
-print("✅ OpenRouter key loaded")
+assert os.environ.get("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY not found"
+print("OpenRouter API key loaded successfully")
 
 
-If successful, you should see:
+Expected output:
 
-✅ OpenRouter key loaded
+OpenRouter API key loaded successfully
 
-📂 Step 6: Verify Project Files
+7. Verify Project Files
 !ls
 
 
-Expected output (example):
+You should see:
 
 build_index.py
 colab_run.py
@@ -117,7 +116,7 @@ ui_chatbot_streamlit.py
 insurance_doc.pdf
 sample_data
 
-🧠 Step 7: Build FAISS Vector Index from PDF
+8. Build FAISS Vector Index from PDF
 
 Run:
 
@@ -128,20 +127,20 @@ Expected output:
 
 Loading PDF...
 Pages: X | Chunks: Y
-✅ FAISS index saved to ./faiss_index
+FAISS index saved to ./faiss_index
 
 
 This step:
 
-Loads the PDF
+Reads the PDF
 
 Splits text into chunks
 
-Generates embeddings
+Creates embeddings
 
-Saves a FAISS index locally
+Stores vectors in FAISS
 
-💬 Step 8: Launch Streamlit Chatbot UI
+9. Launch the Streamlit Chatbot
 
 Run:
 
@@ -150,37 +149,48 @@ Run:
   --server.address 0.0.0.0
 
 
-You should see output like:
+You should see a message like:
 
 You can now view your Streamlit app in your browser.
-URL: http://0.0.0.0:8501
 
-🌐 Step 9: Open the Chatbot in Browser
+10. Open the Chatbot UI in Browser
 
-In Google Colab:
+In Google Colab, click Settings (⚙️)
 
-Click ⚙️ (Settings) → Ports
+Go to Ports
 
 Open Port 8501
 
-Click Preview / Open in new tab
+Click Open in new tab
 
-🎉 Your RAG chatbot UI is now live.
+Your chatbot UI is now live.
 
-❓ Step 10: Ask Questions
+11. Ask Questions
 
-You can now ask questions like:
+You can now ask questions such as:
 
-“What does this insurance document cover?”
+What is this document about?
 
-“Summarize the policy exclusions.”
+Summarize the insurance coverage
 
-“What are the claim conditions?”
+What are the exclusions?
 
-The chatbot will:
+Explain claim conditions
 
-Retrieve relevant chunks using FAISS
+The system will:
 
-Send context + question to OpenRouter LLM
+Retrieve relevant text using FAISS
 
-Return an accurate, grounded answer
+Send context to OpenRouter LLM
+
+Generate grounded answers
+
+12. Project Structure
+rag-sample/
+├── build_index.py           # Builds FAISS index
+├── colab_run.py             # Optional orchestration
+├── ui_chatbot_streamlit.py  # Streamlit chatbot UI
+├── requirements.txt
+├── insurance_doc.pdf        # Sample document
+├── faiss_index/             # Generated vector store
+└── sample_data/
