@@ -1,0 +1,9 @@
+streamlit
+langchain
+langchain-community
+langchain-openai
+langchain-text-splitters
+pypdf
+faiss-cpu
+sentence-transformers
+python-dotenv
