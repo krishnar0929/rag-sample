@@ -1,330 +1,277 @@
-# ============================
-# ✅ ONE-CELL RUN (Colab)
-# - Installs deps
-# - Writes Streamlit app (runtime PDF upload + Build Index)
-# - Launches UI and prints the public Colab URL
-# ============================
+# ================================
+# 🚀 ONE-CELL RUN-ALL (Colab) - PDF + Website RAG Chatbot (FAISS + OpenRouter)
+# UI-only secrets, MMR retrieval, and summary-intent handling
+# ================================
 
-!pip -q install -U streamlit pypdf faiss-cpu langchain langchain-community langchain-openai tiktoken
+!pip install -q streamlit langchain langchain-community langchain-openai faiss-cpu pypdf beautifulsoup4 requests==2.32.4 tiktoken
 
-import os, textwrap, subprocess, time, socket
-from getpass import getpass
+import time, subprocess
 
-# ----------------------------
-# 0) Set API env vars (OpenRouter / OpenAI-compatible)
-# ----------------------------
-# Works with OpenRouter if you set:
-#   OPENAI_API_KEY   = your OpenRouter key
-#   OPENAI_BASE_URL  = https://openrouter.ai/api/v1
-#
-# If you already set these in Colab, this will NOT overwrite.
-if not os.environ.get("OPENAI_API_KEY"):
-    os.environ["OPENAI_API_KEY"] = getpass("Enter OPENAI_API_KEY (OpenRouter key works): ")
-
-if not os.environ.get("OPENAI_BASE_URL"):
-    base = input("Enter OPENAI_BASE_URL (press Enter for OpenRouter default https://openrouter.ai/api/v1): ").strip()
-    os.environ["OPENAI_BASE_URL"] = base or "https://openrouter.ai/api/v1"
-
-# Optional: some OpenRouter setups like having this (safe to ignore if not needed)
-# os.environ["OPENROUTER_SITE_URL"] = "https://your-site.com"
-# os.environ["OPENROUTER_APP_NAME"] = "PDF RAG Chatbot"
-
-# ----------------------------
-# 1) Write Streamlit app
-# ----------------------------
-streamlit_app = r"""
-import os
-import io
-import re
-import time
+app_code = r'''
 import streamlit as st
-
+import requests
+from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain.docstore.document import Document
+
+# ----------------------------
+# Page config
+# ----------------------------
+st.set_page_config(page_title="PDF + Website RAG Chatbot", layout="wide")
+
+# ----------------------------
+# Sidebar: controls & settings
+# ----------------------------
+st.sidebar.title("Controls")
+if st.sidebar.button("Clear chat"):
+    st.session_state.messages = []
+
+st.sidebar.subheader("Retrieval settings")
+top_k = st.sidebar.slider("Top K chunks", 1, 20, 8)
+
+st.sidebar.subheader("Model settings")
+temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
+
+model_options = [
+    "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+    "openai/gpt-4.1-mini",
+    "openai/gpt-4.1",
+    "anthropic/claude-3.5-sonnet",
+    "google/gemini-pro",
+]
+model_choice = st.sidebar.selectbox("Chat model", model_options + ["(Custom)"], index=0)
+chat_model = st.sidebar.text_input("Custom chat model") if model_choice == "(Custom)" else model_choice
+
+embed_options = [
+    "text-embedding-3-small",
+    "text-embedding-3-large",
+    "(Custom)",
+]
+embed_choice = st.sidebar.selectbox("Embeddings model", embed_options, index=0)
+embed_model = st.sidebar.text_input("Custom embeddings model") if embed_choice == "(Custom)" else embed_choice
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔐 Secrets (UI only)")
+st.sidebar.caption("Paste your OpenRouter key (starts with **sk-or-**).")
+openrouter_api_key = st.sidebar.text_input("OpenRouter API Key", type="password")
+
+openrouter_base_url = "https://openrouter.ai/api/v1"
 
 
-APP_TITLE = "💬 PDF RAG Chatbot"
-APP_SUBTITLE = "Upload PDF(s), build an index, and chat with your documents (FAISS + OpenRouter)."
+if not openrouter_api_key:
+    st.warning("Please paste your OpenRouter API Key in the sidebar.")
+    st.stop()
 
-# -------- Helpers --------
-def ensure_env():
-    if not os.environ.get("OPENAI_API_KEY") or not os.environ.get("OPENAI_BASE_URL"):
-        st.error("Missing OPENAI_API_KEY and/or OPENAI_BASE_URL. Set them before running Streamlit.")
-        st.stop()
+# ----------------------------
+# Main UI
+# ----------------------------
+st.title("💬 PDF + Website RAG Chatbot")
+st.caption("Upload PDFs or provide a website URL, build an index, then chat. (FAISS + OpenRouter)")
 
-def is_overview_question(q: str) -> bool:
-    ql = (q or "").strip().lower()
-    patterns = [
-        r"\bwhat\s+is\s+this\s+(pdf|document|policy)\s+about\b",
-        r"\bsummary\b",
-        r"\boverview\b",
-        r"\bhigh\s+level\b",
-        r"\bwhat\s+does\s+it\s+say\b",
-        r"\bexplain\s+this\s+(pdf|document|policy)\b",
-        r"\bwhat\s+is\s+the\s+policy\s+about\b",
-    ]
-    return any(re.search(p, ql) for p in patterns)
+st.info(
+    f"Provider: OpenRouter | Chat model: {chat_model} | Embeddings: {embed_model} | "
+    f"Temp: {temperature} | Top K: {top_k}"
+)
 
-def extract_docs_from_pdfs(uploaded_files):
-    docs = []
-    for uf in uploaded_files:
-        # uf is an UploadedFile
-        data = uf.read()
-        reader = PdfReader(io.BytesIO(data))
-        for page_idx, page in enumerate(reader.pages):
-            txt = page.extract_text() or ""
-            txt = txt.strip()
-            if not txt:
-                continue
-            docs.append(
-                Document(
-                    page_content=txt,
-                    metadata={"source": uf.name, "page": page_idx + 1},
-                )
-            )
-    return docs
-
-def build_vectorstore(docs, embeddings):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=150,
-        separators=["\n\n", "\n", " ", ""],
-    )
-    chunks = splitter.split_documents(docs)
-    if not chunks:
-        return None, 0
-    vs = FAISS.from_documents(chunks, embeddings)
-    return vs, len(chunks)
-
-def format_sources(docs, max_chars=800):
-    out = []
-    for d in docs:
-        meta = d.metadata or {}
-        src = meta.get("source", "N/A")
-        page = meta.get("page", "N/A")
-        snippet = (d.page_content or "").strip().replace("\n", " ")
-        if len(snippet) > max_chars:
-            snippet = snippet[:max_chars] + "..."
-        out.append({"source": src, "page": page, "snippet": snippet})
-    return out
-
-def answer_with_llm(llm, question, retrieved_docs, force_overview=False):
-    # Grounded prompt
-    context = "\n\n".join(
-        [f"[{i+1}] (source={d.metadata.get('source')}, page={d.metadata.get('page')}) {d.page_content}"
-         for i, d in enumerate(retrieved_docs)]
-    ).strip()
-
-    if not context:
-        return "Not found in the provided PDF pages."
-
-    if force_overview:
-        sys = (
-            "You are a helpful assistant that summarizes documents from provided excerpts only. "
-            "Give a high-level overview of what the document is about in 4-8 bullet points. "
-            "If the excerpts are not enough to determine the overview, say that clearly."
-        )
-        user = f"Question: {question}\n\nExcerpts:\n{context}"
-    else:
-        sys = (
-            "You are a helpful assistant answering questions using ONLY the provided excerpts. "
-            "If the answer is not present in the excerpts, say: 'Not found in the provided PDF pages.' "
-            "Be concise and accurate."
-        )
-        user = f"Question: {question}\n\nExcerpts:\n{context}"
-
-    resp = llm.invoke([{"role": "system", "content": sys}, {"role": "user", "content": user}])
-    return resp.content if hasattr(resp, "content") else str(resp)
-
-# -------- App UI --------
-st.set_page_config(page_title="PDF RAG Chatbot", layout="wide")
-st.title(APP_TITLE)
-st.caption(APP_SUBTITLE)
-
-ensure_env()
-
-# Sidebar controls
-with st.sidebar:
-    st.header("Controls")
-    if st.button("🧹 Clear chat", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
-
-    st.divider()
-    st.subheader("Retrieval settings")
-    top_k = st.slider("Top K chunks", min_value=2, max_value=12, value=8, step=1)
-
-    st.divider()
-    st.subheader("Model settings")
-    # OpenRouter commonly supports lots of models. Keep default to something safe.
-    model_name = st.text_input("Model", value="gpt-4o-mini")
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
-
-# Init session state
+# ----------------------------
+# Session state
+# ----------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = None
-if "indexed_files" not in st.session_state:
-    st.session_state.indexed_files = []
-if "chunks_count" not in st.session_state:
-    st.session_state.chunks_count = 0
 
+# ----------------------------
+# Helpers
+# ----------------------------
+def fetch_website_text(url: str) -> str:
+    resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    return soup.get_text(separator="\n")
+
+def build_clients():
+    embeddings = OpenAIEmbeddings(
+        model=embed_model,
+        api_key=openrouter_api_key,
+        base_url=openrouter_base_url,
+    )
+    llm = ChatOpenAI(
+    model=chat_model,
+    temperature=temperature,
+    api_key=openrouter_api_key,
+    base_url=openrouter_base_url,
+    )
+
+    return embeddings, llm
+
+# ----------------------------
 # Upload + Build Index
-st.subheader("Upload PDF(s)")
-uploaded = st.file_uploader(
-    "Upload one or multiple PDFs",
-    type=["pdf"],
-    accept_multiple_files=True,
-)
+# ----------------------------
+st.header("Upload Sources")
+uploaded_files = st.file_uploader("Upload one or multiple PDFs", type=["pdf"], accept_multiple_files=True)
+website_url = st.text_input("Optional: Website URL (example: https://example.com)")
 
-colA, colB = st.columns([1, 2])
-with colA:
-    build = st.button("Build Index", type="primary", use_container_width=True)
-with colB:
-    if st.session_state.vectorstore is not None:
-        st.success(
-            f"Index ready: {st.session_state.chunks_count} chunks | Files: {', '.join(st.session_state.indexed_files)}"
-        )
+if st.button("Build Index"):
+    documents = []
+
+    # PDFs
+    if uploaded_files:
+        for f in uploaded_files:
+            reader = PdfReader(f)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() or ""
+            text = text.strip()
+            if text:
+                documents.append(Document(page_content=text, metadata={"source": f.name}))
+            else:
+                st.warning(f"⚠️ No extractable text found in {f.name}. If it's scanned, OCR is needed.")
+
+    # Website
+    if website_url:
+        try:
+            text = fetch_website_text(website_url).strip()
+            if text:
+                documents.append(Document(page_content=text, metadata={"source": website_url}))
+        except Exception as e:
+            st.error(f"Website read error: {e}")
+
+    if not documents:
+        st.warning("Please upload PDFs and/or provide a website URL.")
     else:
-        st.info("Upload PDFs and click **Build Index** to start chatting.")
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=250)
+        split_docs = splitter.split_documents(documents)
 
-if build:
-    if not uploaded:
-        st.warning("Please upload at least one PDF.")
-        st.stop()
+        try:
+            embeddings, _ = build_clients()
+            st.session_state.vectorstore = FAISS.from_documents(split_docs, embeddings)
+            st.success(f"✅ Index built: {len(split_docs)} chunks")
+        except Exception as e:
+            st.error(f"Index build failed: {e}")
 
-    with st.spinner("Reading PDFs and building FAISS index..."):
-        # Create embeddings + llm
-        embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-large",
-            api_key=os.environ["OPENAI_API_KEY"],
-            base_url=os.environ["OPENAI_BASE_URL"],
-        )
-        docs = extract_docs_from_pdfs(uploaded)
-        vs, n_chunks = build_vectorstore(docs, embeddings)
+# ----------------------------
+# Chat
+# ----------------------------
+st.header("Chat")
 
-        if vs is None:
-            st.error("Could not extract any text from the uploaded PDFs.")
-            st.stop()
+if not st.session_state.vectorstore:
+    st.info("Build the index first, then you can start chatting.")
+else:
+    # Show history
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
 
-        st.session_state.vectorstore = vs
-        st.session_state.indexed_files = [u.name for u in uploaded]
-        st.session_state.chunks_count = n_chunks
+    # Chat input
+    if q := st.chat_input("Ask a question..."):
+        st.session_state.messages.append({"role": "user", "content": q})
 
-        # Optional: auto-add a helpful first message
-        st.session_state.messages.append(
-            {"role": "assistant", "content": "✅ Index built. Ask me anything about the uploaded PDF(s).", "sources": []}
-        )
-    st.rerun()
+        with st.chat_message("assistant"):
+            try:
+                _, llm = build_clients()
 
-st.divider()
+                # Better retrieval for broad questions
+                retriever = st.session_state.vectorstore.as_retriever(
+                    search_type="mmr",
+                    search_kwargs={"k": top_k, "fetch_k": max(20, top_k * 4), "lambda_mult": 0.5},
+                )
+                docs = retriever.invoke(q)
 
-# Chat UI (like your previous one)
-st.subheader("Chat")
-for m in st.session_state.messages:
-    with st.chat_message(m["role"]):
-        st.write(m["content"])
-        srcs = m.get("sources") or []
-        if srcs:
-            with st.expander("Sources (top matches)"):
-                for i, s in enumerate(srcs, 1):
-                    st.markdown(f"**{i}. {s['source']} | Page: {s['page']}**")
-                    st.write(s["snippet"])
+                # Debug: show what was retrieved
+                with st.expander("🔎 Retrieved context (debug)"):
+                    st.write("Retrieved chunks:", len(docs))
+                    for i, d in enumerate(docs, 1):
+                        st.write(f"{i}. Source: {d.metadata.get('source')}")
+                        st.code((d.page_content or "")[:600])
 
-# Input box
-user_q = st.chat_input("Ask a question about the PDF(s)...")
+                context = "\n\n".join([(d.page_content or "") for d in docs]).strip()
 
-if user_q:
-    st.session_state.messages.append({"role": "user", "content": user_q})
+                ql = q.lower()
+                summary_intent = any(
+                    phrase in ql
+                    for phrase in [
+                        "what is this about", "what's this about", "about this",
+                        "summary", "summarize", "overview", "high level",
+                        "what is the policy", "what's the policy", "policy about",
+                        "explain this document", "document about",
+                    ]
+                )
 
-    if st.session_state.vectorstore is None:
-        st.session_state.messages.append(
-            {"role": "assistant", "content": "Please upload PDF(s) and click **Build Index** first.", "sources": []}
-        )
-        st.rerun()
+                if summary_intent:
+                    if not context or len(context) < 200:
+                        prompt = f"""
+You do NOT have enough retrieved text to summarize confidently.
 
-    try:
-        llm = ChatOpenAI(
-            model=model_name,
-            temperature=temperature,
-            api_key=os.environ["OPENAI_API_KEY"],
-            base_url=os.environ["OPENAI_BASE_URL"],
-        )
+Ask up to 2 short clarifying questions to understand what part the user wants
+(e.g., topic, keyword, section name), and suggest they try:
+- asking a more specific question
+- increasing Top K
+- uploading a text-based PDF (not scanned)
 
-        vs = st.session_state.vectorstore
-        retriever = vs.as_retriever(search_kwargs={"k": int(top_k)})
+User question: {q}
+"""
+                    else:
+                        prompt = f"""
+You are summarizing the provided sources.
 
-        # Retrieve
-        docs = retriever.invoke(user_q)
-        sources = format_sources(docs[: int(top_k)])
+Write:
+1) A 2-3 sentence summary
+2) 5-8 bullet key points
+3) Mention main entities/terms you see (if any)
+4) List sources used (from metadata 'source')
 
-        # If user asks overview, force summary-style answer and (optionally) pull a few extra chunks
-        force_overview = is_overview_question(user_q)
-        if force_overview:
-            # for overview, retrieve a bit more context if available
-            extra_k = min(12, max(int(top_k), 10))
-            docs = vs.as_retriever(search_kwargs={"k": extra_k}).invoke(user_q)
-            sources = format_sources(docs[: extra_k])
+Sources:
+{context}
 
-        answer = answer_with_llm(llm, user_q, docs[: (12 if force_overview else int(top_k))], force_overview)
+User question:
+{q}
+"""
+                else:
+                    prompt = f"""
+Answer using ONLY the context below.
+If the answer is not in the context, say exactly:
+Not found in the provided sources.
 
-        st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources})
-        st.rerun()
+Context:
+{context}
 
-    except Exception as e:
-        st.session_state.messages.append({"role": "assistant", "content": f"Error while answering: {e}", "sources": []})
-        st.rerun()
+Question:
+{q}
 """
 
-with open("ui_chatbot_streamlit.py", "w") as f:
-    f.write(textwrap.dedent(streamlit_app))
+                ans = llm.invoke(prompt).content
+                st.markdown(ans)
+                st.session_state.messages.append({"role": "assistant", "content": ans})
 
-print("✅ Wrote ui_chatbot_streamlit.py")
+            except Exception as e:
+                st.error(f"Chat failed: {e}")
+'''
 
-# ----------------------------
-# 2) Start Streamlit on an available port
-# ----------------------------
-def find_free_port(start=8501, end=8600):
-    for port in range(start, end + 1):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError("No free port found in range.")
+with open("app.py", "w") as f:
+    f.write(app_code)
 
-# stop any old streamlit
-subprocess.run("pkill -f streamlit || true", shell=True)
-
-PORT = find_free_port(8501, 8600)
-print(f"✅ Using port: {PORT}")
-
-p = subprocess.Popen(
-    [
-        "streamlit", "run", "ui_chatbot_streamlit.py",
-        "--server.port", str(PORT),
-        "--server.address", "0.0.0.0",
-        "--server.enableCORS", "false",
-        "--server.enableXsrfProtection", "false",
-        "--browser.gatherUsageStats", "false",
-        "--server.fileWatcherType", "none",
-    ],
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-)
+# Restart Streamlit
+subprocess.run("pkill -f streamlit", shell=True)
+subprocess.Popen([
+    "streamlit","run","app.py",
+    "--server.port","8501",
+    "--server.address","0.0.0.0",
+    "--server.enableCORS","false",
+    "--server.enableXsrfProtection","false",
+    "--browser.gatherUsageStats","false",
+    "--server.fileWatcherType","none"
+])
 
 time.sleep(2)
-print("✅ Streamlit started.")
 
-# ----------------------------
-# 3) Print the public Colab URL
-# ----------------------------
 from google.colab import output
-url = output.eval_js(f"google.colab.kernel.proxyPort({PORT})")
-print("\n🌐 Open this URL:\n", url)
+print("✅ Open this URL:")
+print(output.eval_js("google.colab.kernel.proxyPort(8501)"))
