@@ -1,0 +1,105 @@
+RAG Workshop – Environment Setup Guide
+
+Please complete the following steps before beginning the RAG pipeline implementation.
+
+1️⃣ Create a Google Colab Environment
+
+Sign in to your Google account.
+
+Navigate to: https://colab.research.google.com
+
+Click “New Notebook” to create a fresh working environment.
+
+This notebook will be used to build and execute the RAG pipeline.
+
+2️⃣ Install Required Libraries
+
+In the first cell of your notebook, install the necessary dependencies:
+
+!pip install -q langchain langchain-community langchain-openai faiss-cpu langsmith
+
+These libraries provide:
+
+LangChain – RAG orchestration
+
+FAISS – Vector database
+
+OpenAI integration – LLM and embeddings
+
+LangSmith – Prompt templates
+
+Wait for installation to complete before proceeding.
+
+3️⃣ Create an OpenRouter Account
+
+Visit: https://openrouter.ai
+
+Register for an account.
+
+Navigate to the API Keys section.
+
+Generate a new API key.
+
+Securely copy and store your key (it begins with sk-or-...).
+
+This key will be used to access language models and embedding services.
+
+4️⃣ Add the OpenRouter API Key to Colab
+
+To securely store your API key:
+
+Click the 🔑 “Secrets” tab in the left sidebar of Colab.
+
+Add a new secret:
+
+Name: OPENROUTER_API_KEY
+
+Value: Paste your API key.
+
+Enable notebook access.
+
+5️⃣ Read the API Key from Colab Secrets
+
+In your notebook, retrieve and configure the API key:
+
+from google.colab import userdata
+import os
+
+openrouter_key = userdata.get("OPENROUTER_API_KEY")
+os.environ["OPENAI_API_KEY"] = openrouter_key
+
+This securely loads your key into the environment for use by LangChain.
+
+6️⃣ Test the Language Model (Mandatory Step)
+
+Before building the RAG pipeline, confirm that the LLM connection works correctly.
+
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="openai/gpt-4o-mini",
+    base_url="https://openrouter.ai/api/v1",
+    api_key=openrouter_key,
+    temperature=0
+)
+
+print(llm.invoke("Say hello in one sentence.").content)
+
+If a valid response is returned, the model is successfully connected.
+
+7️⃣ Test the Embedding Model
+
+Next, verify that embeddings are functioning correctly:
+
+from langchain_openai import OpenAIEmbeddings
+
+embeddings = OpenAIEmbeddings(
+    model="openai/text-embedding-3-small",
+    base_url="https://openrouter.ai/api/v1",
+    api_key=openrouter_key
+)
+
+vector = embeddings.embed_query("This is a test sentence.")
+print("Embedding vector length:", len(vector))
+
+You should see a numerical vector length (e.g., 1536), confirming that the embedding model is operational.
